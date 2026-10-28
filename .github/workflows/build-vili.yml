@@ -1,0 +1,191 @@
+name: Build Legacy vili HyperOS MIUI Kernel
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and package Legacy vili kernel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          ref: hyper-os
+          fetch-depth: 1
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            cpio \
+            device-tree-compiler \
+            flex \
+            libelf-dev \
+            libssl-dev \
+            python3 \
+            rsync \
+            unzip \
+            wget \
+            zip
+
+      - name: Verify AnyKernel3 template
+        run: |
+          test -f packaging/Legacy-vili-miui-template.zip
+          unzip -t packaging/Legacy-vili-miui-template.zip
+
+      - name: Download WeebX Clang 18.1.8
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/toolchains/weebx"
+
+          wget --progress=dot:giga \
+            -O /tmp/WeebX-Clang-18.1.8.tar.gz \
+            "https://github.com/XSans0/WeebX-Clang/releases/download/WeebX-Clang-18.1.8-release/WeebX-Clang-18.1.8.tar.gz"
+
+          tar -xzf /tmp/WeebX-Clang-18.1.8.tar.gz \
+            -C "$GITHUB_WORKSPACE/toolchains/weebx"
+
+          chmod +x "$GITHUB_WORKSPACE/toolchains/weebx/bin/"*
+          echo "$GITHUB_WORKSPACE/toolchains/weebx/bin" >> "$GITHUB_PATH"
+
+      - name: Check toolchain
+        run: |
+          clang --version
+          ld.lld --version
+          aarch64-linux-gnu-ld --version | head -1
+          arm-linux-gnueabi-ld --version | head -1
+
+      - name: Configure kernel
+        env:
+          TOOLCHAIN: ${{ github.workspace }}/toolchains/weebx
+        run: |
+          rm -rf out
+          mkdir -p out
+
+          make O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CROSS_COMPILE="$TOOLCHAIN/bin/aarch64-linux-gnu-" \
+            CROSS_COMPILE_COMPAT="$TOOLCHAIN/bin/arm-linux-gnueabi-" \
+            kangaroox-vili_defconfig
+
+      - name: Set Legacy kernel name
+        env:
+          TOOLCHAIN: ${{ github.workspace }}/toolchains/weebx
+        run: |
+          ./scripts/config \
+            --file out/.config \
+            --set-str CONFIG_LOCALVERSION "-Legacy-vili-MIUI"
+
+          ./scripts/config \
+            --file out/.config \
+            --disable CONFIG_LOCALVERSION_AUTO
+
+          make O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CROSS_COMPILE="$TOOLCHAIN/bin/aarch64-linux-gnu-" \
+            CROSS_COMPILE_COMPAT="$TOOLCHAIN/bin/arm-linux-gnueabi-" \
+            olddefconfig
+
+          grep -E \
+            'CONFIG_(MACH_XIAOMI_VILI|MACH_XIAOMI_SM8350|MIUI_OPTIMIZATIONS|QGKI|MODULES|LOCALVERSION|LTO_CLANG|CFI_CLANG)=' \
+            out/.config || true
+
+      - name: Build kernel and device trees
+        env:
+          TOOLCHAIN: ${{ github.workspace }}/toolchains/weebx
+        run: |
+          make -j"$(nproc)" \
+            O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CROSS_COMPILE="$TOOLCHAIN/bin/aarch64-linux-gnu-" \
+            CROSS_COMPILE_COMPAT="$TOOLCHAIN/bin/arm-linux-gnueabi-" \
+            Image \
+            Image.gz \
+            dtbs \
+            dtbo.img
+
+      - name: Locate build outputs
+        run: |
+          test -f out/arch/arm64/boot/Image
+
+          DTB_PATH="$(find out -type f -name 'lahaina-v2.1.dtb' -print -quit)"
+          DTBO_PATH="$(find out -type f -name 'dtbo.img' -print -quit)"
+
+          test -n "$DTB_PATH"
+          test -n "$DTBO_PATH"
+
+          echo "DTB_PATH=$DTB_PATH" >> "$GITHUB_ENV"
+          echo "DTBO_PATH=$DTBO_PATH" >> "$GITHUB_ENV"
+
+          ls -lh out/arch/arm64/boot/Image
+          ls -lh "$DTB_PATH"
+          ls -lh "$DTBO_PATH"
+
+      - name: Prepare Legacy AnyKernel3 package
+        run: |
+          set -e
+
+          rm -rf package artifacts
+          mkdir -p package artifacts
+
+          unzip -q \
+            packaging/Legacy-vili-miui-template.zip \
+            -d package
+
+          cp out/arch/arm64/boot/Image package/Image
+          cp "$DTB_PATH" package/dtb
+          cp "$DTBO_PATH" package/dtbo.img
+
+          sed -i \
+            's/kernel.string=KangarooX kernel by ktommy91/kernel.string=Legacy kernel for vili/' \
+            package/anykernel.sh
+
+          chmod 0644 package/Image
+          chmod 0644 package/dtb
+          chmod 0644 package/dtbo.img
+
+          cat > package/build-info.txt <<EOF
+          Kernel name: Legacy
+          Device: Xiaomi 11T Pro vili
+          Target: MIUI/HyperOS
+          Kernel branch: hyper-os
+          Kernel commit: $(git rev-parse HEAD)
+          Defconfig: kangaroox-vili_defconfig
+          Kernel version: $(make -s O=out kernelversion)
+          Compiler:
+          $(clang --version | head -1)
+          Template: Legacy-vili-miui-template.zip
+          Modules: disabled
+          EOF
+
+          cd package
+          zip -r9 ../artifacts/Legacy-vili-weebx18-miui.zip .
+
+      - name: Verify flashable ZIP
+        run: |
+          set -e
+          test -f artifacts/Legacy-vili-weebx18-miui.zip
+          unzip -t artifacts/Legacy-vili-weebx18-miui.zip
+          unzip -l artifacts/Legacy-vili-weebx18-miui.zip | sed -n '1,100p'
+          ls -lh artifacts/Legacy-vili-weebx18-miui.zip
+
+      - name: Upload flashable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Legacy-vili-weebx18-miui-${{ github.sha }}
+          path: artifacts/Legacy-vili-weebx18-miui.zip
+          if-no-files-found: error
