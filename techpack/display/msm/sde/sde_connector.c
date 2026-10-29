@@ -149,7 +149,12 @@ static int sde_backlight_device_update_status(struct backlight_device *bd)
 	if (!bl_lvl && brightness)
 		bl_lvl = 1;
 
-	if (bl_lvl && bl_lvl < dsi_display->panel->bl_config.bl_min_level)
+	/*
+	 * dsi_display is only set for DSI connectors. On eDP it is
+	 * uninitialized — skip the DSI-specific min-level clamp.
+	 */
+	if (bl_lvl && dsi_display &&
+	    bl_lvl < dsi_display->panel->bl_config.bl_min_level)
 		bl_lvl = dsi_display->panel->bl_config.bl_min_level;
 
 	if (!c_conn->allow_bl_update) {
@@ -174,11 +179,14 @@ static int sde_backlight_device_update_status(struct backlight_device *bd)
 				c_conn->base.dev, &event, (u8 *)&brightness);
 		}
 
-
-		d_event.disp_id = mi_get_disp_id(dsi_display);
-		d_event.type = MI_DISP_EVENT_BACKLIGHT;
-		d_event.length = sizeof(brightness);
-		mi_disp_feature_event_notify(&d_event, (u8 *)&brightness);
+		/* MI_DISP_EVENT_BACKLIGHT is DSI-only */
+		if (dsi_display) {
+			d_event.disp_id = mi_get_disp_id(dsi_display);
+			d_event.type = MI_DISP_EVENT_BACKLIGHT;
+			d_event.length = sizeof(brightness);
+			mi_disp_feature_event_notify(&d_event,
+						     (u8 *)&brightness);
+		}
 
 		rc = c_conn->ops.set_backlight(&c_conn->base,
 				c_conn->display, bl_lvl);
@@ -234,7 +242,7 @@ static int sde_backlight_setup(struct sde_connector *c_conn,
 	struct backlight_properties props;
 	struct dsi_display *display;
 	struct dp_panel *dp_panel;
-	struct dsi_backlight_config *dsi_bl_config;
+	struct dsi_backlight_config *dsi_bl_config =NULL;
 	struct sde_kms *sde_kms;
 	static int display_count;
 	char bl_node_name[BL_NODE_NAME_SIZE];
@@ -273,7 +281,7 @@ static int sde_backlight_setup(struct sde_connector *c_conn,
 	props.type = BACKLIGHT_RAW;
 	props.power = FB_BLANK_UNBLANK;
 	props.max_brightness = brightness_max_level;
-	props.brightness = dsi_bl_config->brightness_init_level;
+	props.brightness = dsi_bl_config->brightness_init_level : brightness_max_level;
 	snprintf(bl_node_name, BL_NODE_NAME_SIZE, "panel%u-backlight",
 							display_count);
 	c_conn->bl_device = backlight_device_register(bl_node_name, dev->dev,
