@@ -7118,6 +7118,7 @@ static void walt_find_best_target(struct sched_domain *sd, cpumask_t *cpus,
 	if (best_idle_cpu != -1 && target_cpu != best_idle_cpu)
 		cpumask_set_cpu(best_idle_cpu, cpus);
 out:
+	;
 	//trace_sched_find_best_target(p, min_util, start_cpu,
 	//		     best_idle_cpu, most_spare_cap_cpu,
 	//		     target_cpu, order_index, end_index,
