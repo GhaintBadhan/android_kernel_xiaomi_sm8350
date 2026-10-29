@@ -10,7 +10,7 @@ jobs:
   build:
     name: Build and package Legacy vili kernel
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 180
 
     steps:
       - name: Checkout kernel source
@@ -23,36 +23,47 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            bc \
-            bison \
-            build-essential \
-            cpio \
-            device-tree-compiler \
-            flex \
-            libelf-dev \
-            libssl-dev \
-            python3 \
-            rsync \
-            unzip \
-            wget \
-            zip
+            bc bison build-essential cpio device-tree-compiler flex \
+            libelf-dev libssl-dev python3 rsync unzip wget zip
+
+      - name: Verify defconfig exists
+        run: |
+          set -euo pipefail
+          test -f arch/arm64/configs/legacy_vili_defconfig \
+            || { echo "ERROR: arch/arm64/configs/legacy_vili_defconfig not found"; \
+                 ls arch/arm64/configs | head -50; exit 1; }
 
       - name: Verify AnyKernel3 template
         run: |
           test -f packaging/Legacy-vili-miui-template.zip
           unzip -t packaging/Legacy-vili-miui-template.zip
+          echo "---- Template top-level listing ----"
+          unzip -l packaging/Legacy-vili-miui-template.zip | sed -n '1,60p'
+
+      - name: Cache WeebX Clang 18.1.8
+        id: weebx-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/toolchains/weebx
+          key: weebx-clang-18.1.8-v1
 
       - name: Download WeebX Clang 18.1.8
+        if: steps.weebx-cache.outputs.cache-hit != 'true'
         run: |
+          set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/toolchains/weebx"
-
           wget --progress=dot:giga \
             -O /tmp/WeebX-Clang-18.1.8.tar.gz \
             "https://github.com/XSans0/WeebX-Clang/releases/download/WeebX-Clang-18.1.8-release/WeebX-Clang-18.1.8.tar.gz"
-
           tar -xzf /tmp/WeebX-Clang-18.1.8.tar.gz \
+            --strip-components=1 \
             -C "$GITHUB_WORKSPACE/toolchains/weebx"
 
+      - name: Expose toolchain on PATH
+        run: |
+          set -euo pipefail
+          test -x "$GITHUB_WORKSPACE/toolchains/weebx/bin/clang" \
+            || { echo "clang missing from toolchain"; ls -la "$GITHUB_WORKSPACE/toolchains/weebx"; exit 1; }
           chmod +x "$GITHUB_WORKSPACE/toolchains/weebx/bin/"*
           echo "$GITHUB_WORKSPACE/toolchains/weebx/bin" >> "$GITHUB_PATH"
 
@@ -67,68 +78,56 @@ jobs:
         env:
           TOOLCHAIN: ${{ github.workspace }}/toolchains/weebx
         run: |
+          set -euo pipefail
           rm -rf out
           mkdir -p out
-
           make O=out \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
+            ARCH=arm64 LLVM=1 \
             CROSS_COMPILE="$TOOLCHAIN/bin/aarch64-linux-gnu-" \
             CROSS_COMPILE_COMPAT="$TOOLCHAIN/bin/arm-linux-gnueabi-" \
-            kangaroox-vili_defconfig
+            legacy_vili_defconfig
 
       - name: Set Legacy kernel name
         env:
           TOOLCHAIN: ${{ github.workspace }}/toolchains/weebx
         run: |
-          ./scripts/config \
-            --file out/.config \
-            --set-str CONFIG_LOCALVERSION "-Legacy-vili"
-
-          ./scripts/config \
-            --file out/.config \
-            --disable CONFIG_LOCALVERSION_AUTO
-
+          set -euo pipefail
+          ./scripts/config --file out/.config --set-str CONFIG_LOCALVERSION "-Legacy-vili"
+          ./scripts/config --file out/.config --disable CONFIG_LOCALVERSION_AUTO
           make O=out \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
+            ARCH=arm64 LLVM=1 \
             CROSS_COMPILE="$TOOLCHAIN/bin/aarch64-linux-gnu-" \
             CROSS_COMPILE_COMPAT="$TOOLCHAIN/bin/arm-linux-gnueabi-" \
             olddefconfig
-
-          grep -E \
-            'CONFIG_(MACH_XIAOMI_VILI|MACH_XIAOMI_SM8350|MIUI_OPTIMIZATIONS|QGKI|MODULES|LOCALVERSION|LTO_CLANG|CFI_CLANG)=' \
+          grep -E 'CONFIG_(MACH_XIAOMI_VILI|MACH_XIAOMI_SM8350|MIUI_OPTIMIZATIONS|QGKI|MODULES|LOCALVERSION|LTO_CLANG|CFI_CLANG)=' \
             out/.config || true
 
       - name: Build kernel and device trees
         env:
           TOOLCHAIN: ${{ github.workspace }}/toolchains/weebx
         run: |
+          set -euo pipefail
           make -j"$(nproc)" \
             O=out \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
+            ARCH=arm64 LLVM=1 \
             CROSS_COMPILE="$TOOLCHAIN/bin/aarch64-linux-gnu-" \
             CROSS_COMPILE_COMPAT="$TOOLCHAIN/bin/arm-linux-gnueabi-" \
-            Image \
-            Image.gz \
-            dtbs \
-            dtbo.img
+            Image dtbs dtbo.img
 
       - name: Locate build outputs
         run: |
-          test -f out/arch/arm64/boot/Image
+          set -euo pipefail
+          test -s out/arch/arm64/boot/Image
 
           DTB_PATH="$(find out -type f -name 'lahaina-v2.1.dtb' -print -quit)"
           DTBO_PATH="$(find out -type f -name 'dtbo.img' -print -quit)"
 
           test -n "$DTB_PATH"
           test -n "$DTBO_PATH"
+          test -s "$DTB_PATH"
+          test -s "$DTBO_PATH"
 
-          echo "DTB_PATH=$DTB_PATH" >> "$GITHUB_ENV"
+          echo "DTB_PATH=$DTB_PATH"   >> "$GITHUB_ENV"
           echo "DTBO_PATH=$DTBO_PATH" >> "$GITHUB_ENV"
 
           ls -lh out/arch/arm64/boot/Image
@@ -137,51 +136,97 @@ jobs:
 
       - name: Prepare Legacy AnyKernel3 package
         run: |
-          set -e
+          set -euo pipefail
 
-          rm -rf package artifacts
-          mkdir -p package artifacts
+          rm -rf package package_raw artifacts
+          mkdir -p package package_raw artifacts
 
-          unzip -q \
-            packaging/Legacy-vili-miui-template.zip \
-            -d package
+          unzip -q packaging/Legacy-vili-miui-template.zip -d package_raw
+
+          if [ -f package_raw/anykernel.sh ]; then
+            cp -a package_raw/. package/
+          else
+            WRAPPER="$(dirname "$(find package_raw -maxdepth 3 -name anykernel.sh -print -quit)")"
+            if [ -z "$WRAPPER" ] || [ ! -d "$WRAPPER" ]; then
+              echo "ERROR: anykernel.sh not found in template"
+              find package_raw -maxdepth 4 -type f | head -100
+              exit 1
+            fi
+            echo "Flattening template wrapper directory: $WRAPPER"
+            cp -a "$WRAPPER"/. package/
+          fi
+          rm -rf package_raw
+
+          for f in anykernel.sh \
+                   META-INF/com/google/android/update-binary \
+                   META-INF/com/google/android/updater-script; do
+            if [ ! -e "package/$f" ]; then
+              echo "ERROR: missing $f after template extraction"
+              find package -maxdepth 5 -type f | head -100
+              exit 1
+            fi
+          done
+
+          if find package -name '*.zip' -print -quit | grep -q .; then
+            echo "ERROR: template contains a nested .zip:"
+            find package -name '*.zip'
+            exit 1
+          fi
 
           cp out/arch/arm64/boot/Image package/Image
-          cp "$DTB_PATH" package/dtb
+          cp "$DTB_PATH"  package/dtb
           cp "$DTBO_PATH" package/dtbo.img
 
-          sed -i \
-            's/kernel.string=KangarooX kernel by ktommy91/kernel.string=Legacy kernel for vili/' \
-            package/anykernel.sh
+          sed -i 's/^kernel\.string=.*/kernel.string=Legacy kernel for vili/' package/anykernel.sh
+          grep -q '^kernel\.string=Legacy kernel for vili' package/anykernel.sh
 
-          chmod 0644 package/Image
-          chmod 0644 package/dtb
-          chmod 0644 package/dtbo.img
+          chmod 644 package/Image package/dtb package/dtbo.img
 
           cat > package/build-info.txt <<EOF
           Kernel name: Legacy
-          Device: Xiaomi 11T Pro vili
+          Device: Xiaomi 11T Pro (vili)
           Target: MIUI/HyperOS
           Kernel branch: hyper-os
           Kernel commit: $(git rev-parse HEAD)
-          Defconfig: kangaroox-vili_defconfig
+          Defconfig: legacy_vili_defconfig
           Kernel version: $(make -s O=out kernelversion)
-          Compiler:
-          $(clang --version | head -1)
+          Compiler: $(clang --version | head -1)
           Template: Legacy-vili-miui-template.zip
           Modules: disabled
           EOF
+
+          if find package -name '*.zip' -print -quit | grep -q .; then
+            echo "ERROR: nested zip found before packaging"
+            find package -name '*.zip'
+            exit 1
+          fi
 
           cd package
           zip -r9 ../artifacts/Legacy-vili-weebx18-miui.zip .
 
       - name: Verify flashable ZIP
         run: |
-          set -e
-          test -f artifacts/Legacy-vili-weebx18-miui.zip
-          unzip -t artifacts/Legacy-vili-weebx18-miui.zip
-          unzip -l artifacts/Legacy-vili-weebx18-miui.zip | sed -n '1,100p'
-          ls -lh artifacts/Legacy-vili-weebx18-miui.zip
+          set -euo pipefail
+          ZIP=artifacts/Legacy-vili-weebx18-miui.zip
+          test -f "$ZIP"
+          unzip -t "$ZIP"
+
+          echo "---- ZIP contents ----"
+          unzip -l "$ZIP" | sed -n '1,120p'
+
+          for entry in anykernel.sh Image dtb dtbo.img build-info.txt \
+                       META-INF/com/google/android/update-binary; do
+            unzip -l "$ZIP" | awk '{print $4}' | grep -qx "$entry" \
+              || { echo "ERROR: missing $entry in flashable zip"; exit 1; }
+          done
+
+          if unzip -l "$ZIP" | awk '{print $4}' | grep -q '\.zip$'; then
+            echo "ERROR: flashable zip contains a nested .zip"
+            unzip -l "$ZIP" | awk '{print $4}' | grep '\.zip$'
+            exit 1
+          fi
+
+          ls -lh "$ZIP"
 
       - name: Upload flashable ZIP
         uses: actions/upload-artifact@v4
