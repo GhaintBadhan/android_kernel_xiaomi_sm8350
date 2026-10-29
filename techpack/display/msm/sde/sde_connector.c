@@ -99,7 +99,7 @@ static inline struct sde_kms *_sde_connector_get_kms(struct drm_connector *conn)
 static int sde_backlight_device_update_status(struct backlight_device *bd)
 {
 	int brightness;
-	struct dsi_display *dsi_display;
+	struct dsi_display *dsi_display = NULL;
 	struct dp_panel *dp_panel;
 	struct sde_connector *c_conn = bl_get_data(bd);
 	int bl_lvl;
@@ -151,7 +151,7 @@ static int sde_backlight_device_update_status(struct backlight_device *bd)
 
 	/*
 	 * dsi_display is only set for DSI connectors. On eDP it is
-	 * uninitialized — skip the DSI-specific min-level clamp.
+	 * NULL — skip the DSI-specific min-level clamp.
 	 */
 	if (bl_lvl && dsi_display &&
 	    bl_lvl < dsi_display->panel->bl_config.bl_min_level)
@@ -242,7 +242,7 @@ static int sde_backlight_setup(struct sde_connector *c_conn,
 	struct backlight_properties props;
 	struct dsi_display *display;
 	struct dp_panel *dp_panel;
-	struct dsi_backlight_config *dsi_bl_config =NULL;
+	struct dsi_backlight_config *dsi_bl_config = NULL;
 	struct sde_kms *sde_kms;
 	static int display_count;
 	char bl_node_name[BL_NODE_NAME_SIZE];
@@ -281,7 +281,8 @@ static int sde_backlight_setup(struct sde_connector *c_conn,
 	props.type = BACKLIGHT_RAW;
 	props.power = FB_BLANK_UNBLANK;
 	props.max_brightness = brightness_max_level;
-	props.brightness = dsi_bl_config->brightness_init_level : brightness_max_level;
+	props.brightness = dsi_bl_config ?
+		dsi_bl_config->brightness_init_level : brightness_max_level;
 	snprintf(bl_node_name, BL_NODE_NAME_SIZE, "panel%u-backlight",
 							display_count);
 	c_conn->bl_device = backlight_device_register(bl_node_name, dev->dev,
