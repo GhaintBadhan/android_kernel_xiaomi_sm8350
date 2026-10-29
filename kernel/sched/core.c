@@ -2677,8 +2677,8 @@ static inline bool ttwu_queue_cond(int cpu, int wake_flags)
 
 static bool ttwu_queue_wakelist(struct task_struct *p, int cpu, int wake_flags)
 {
-	if (sched_feat(TTWU_QUEUE) && ttwu_queue_cond(cpu, wake_flags) ||
-                        walt_want_remote_wakeup()) {
+	if ((sched_feat(TTWU_QUEUE) && ttwu_queue_cond(cpu, wake_flags)) ||
+	    walt_want_remote_wakeup()) {
 		if (WARN_ON_ONCE(cpu == smp_processor_id()))
 			return false;
 
