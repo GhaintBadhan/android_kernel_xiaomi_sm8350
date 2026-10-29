@@ -84,7 +84,7 @@ jobs:
         run: |
           ./scripts/config \
             --file out/.config \
-            --set-str CONFIG_LOCALVERSION "-Legacy-vili-MIUI"
+            --set-str CONFIG_LOCALVERSION "-Legacy-vili"
 
           ./scripts/config \
             --file out/.config \
